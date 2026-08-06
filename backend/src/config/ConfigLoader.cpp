@@ -33,7 +33,20 @@ namespace ratelimiter{
         }
         AppConfig cfg = AppConfig::withDefaults();
         try{
-            
+            cfg.algorithm = RateLimiterFactory::fromString(j.at("algorithm").get<std::string>());
+        cfg.server_port = j.value("server_port", 8080);
+
+        cfg.plan_limits[PlanTier::Free]       = parseLimit(j.at("plans").at("free"));
+        cfg.plan_limits[PlanTier::Premium]    = parseLimit(j.at("plans").at("premium"));
+        cfg.plan_limits[PlanTier::Enterprise] = parseLimit(j.at("plans").at("enterprise"));
+
+        cfg.global_limit = parseLimit(j.at("global_limit"));
+        cfg.per_ip_limit = parseLimit(j.at("per_ip_limit"));
+
+        cfg.redis_host = j.at("redis").value("host", "localhost");
+        cfg.redis_port = j.at("redis").value("port", 6379);
+        cfg.postgres_conn_string = j.at("postgres").at("conn_string").get<std::string>();
+        cfg.jwt_secret = j.at("jwt_secret").get<std::string>();
         }
     }
 
