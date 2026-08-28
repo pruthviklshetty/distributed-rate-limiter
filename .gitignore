@@ -1,0 +1,21 @@
+# Binaries
+/distributed-rate-limiter
+/distributed-rate-limiter.exe
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+coverage.*
+
+# Frontend
+/web/node_modules/
+# NOTE: /web/dist is intentionally committed — internal/webui embeds it with
+# go:embed so `go run .` always has a dashboard to serve. `make build`
+# regenerates it from source.
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

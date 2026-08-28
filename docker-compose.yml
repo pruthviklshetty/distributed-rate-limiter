@@ -1,0 +1,28 @@
+# app + Redis. The app uses the Redis-backed token bucket with an in-memory
+# fallback, so `docker compose up` demonstrates the distributed path.
+#
+#   docker compose up --build
+#   open http://localhost:8080
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      RL_ADDR: ":8080"
+      RL_ALGO: "token-bucket"
+      RL_REDIS: "redis:6379"
+    command: ["-limit", "200", "-refill", "100", "-key-by", "header:X-API-Key"]
+    depends_on:
+      redis:
+        condition: service_healthy
