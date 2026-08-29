@@ -11,21 +11,21 @@ import (
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/api"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/events"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/httpmw"
-	"github.com/pruthviklshetty/distributed-rate-limiter/internal/ratelimit"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/stats"
 )
 
 // Options configures the HTTP handler.
 type Options struct {
-	Limiter   ratelimit.RateLimiter
-	KeyFunc   httpmw.KeyFunc
-	Algorithm string
+	// Control is the live limiter: it enforces requests, reports config, and
+	// can switch algorithm at runtime. Required.
+	Control api.Control
+	KeyFunc httpmw.KeyFunc
+	// KeyBy labels the key granularity in GET /api/config ("ip", "header:...").
+	KeyBy string
 
 	// Collector receives an event per decision and backs the API. If nil, a
 	// no-op sink is used and the API is not mounted.
 	Collector *stats.Collector
-	// APIConfig is returned verbatim by GET /api/config.
-	APIConfig api.ConfigInfo
 	// UI, if set, serves the dashboard at "/". Passed in (rather than imported
 	// here) so this package has no dependency on the embedded assets.
 	UI http.Handler
@@ -39,10 +39,10 @@ func New(opts Options) http.Handler {
 	}
 
 	mw := httpmw.New(httpmw.Config{
-		Limiter:   opts.Limiter,
-		KeyFunc:   opts.KeyFunc,
-		Sink:      sink,
-		Algorithm: opts.Algorithm,
+		Limiter:     opts.Control,
+		KeyFunc:     opts.KeyFunc,
+		Sink:        sink,
+		AlgorithmFn: opts.Control.Algorithm,
 	})
 
 	// Endpoints subject to rate limiting.
@@ -56,10 +56,9 @@ func New(opts Options) http.Handler {
 
 	if opts.Collector != nil {
 		h := &api.Handlers{
-			Collector:   opts.Collector,
-			Config:      opts.APIConfig,
-			DemoLimiter: opts.Limiter,
-			Algorithm:   opts.Algorithm,
+			Collector: opts.Collector,
+			Control:   opts.Control,
+			KeyBy:     opts.KeyBy,
 		}
 		h.Mount(root)
 	}

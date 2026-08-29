@@ -68,6 +68,28 @@ header h1 {
   font-weight: 600;
 }
 
+.algo-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.algo-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.algo-error {
+  margin-top: 8px;
+  color: var(--reject);
+  font-size: 13px;
+}
+
 .conn {
   margin-left: auto;
   font-size: 12px;

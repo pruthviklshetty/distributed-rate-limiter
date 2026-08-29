@@ -8,8 +8,20 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { getConfig, getStats, sendBurst, type ConfigInfo, type Snapshot } from "./api";
+import {
+  getConfig,
+  getStats,
+  sendBurst,
+  setAlgorithm,
+  type ConfigInfo,
+  type Snapshot,
+} from "./api";
 import { useLiveSeries } from "./useLiveSeries";
+
+const ALGORITHMS = [
+  { value: "token-bucket", label: "Token bucket" },
+  { value: "sliding-window", label: "Sliding window" },
+];
 
 export function App() {
   const live = useLiveSeries();
@@ -19,6 +31,8 @@ export function App() {
   const [burstCount, setBurstCount] = useState(50);
   const [busy, setBusy] = useState(false);
   const [lastBurst, setLastBurst] = useState<string | null>(null);
+  const [switchingAlgo, setSwitchingAlgo] = useState(false);
+  const [algoError, setAlgoError] = useState<string | null>(null);
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => setConfig(null));
@@ -29,6 +43,18 @@ export function App() {
     load();
     const id = setInterval(load, 2000);
     return () => clearInterval(id);
+  }, []);
+
+  const changeAlgo = useCallback(async (next: string) => {
+    setSwitchingAlgo(true);
+    setAlgoError(null);
+    try {
+      setConfig(await setAlgorithm(next));
+    } catch (e) {
+      setAlgoError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setSwitchingAlgo(false);
+    }
   }, []);
 
   const fireBurst = useCallback(async () => {
@@ -57,7 +83,21 @@ export function App() {
       <section className="panel config">
         {config ? (
           <>
-            <Stat label="Algorithm" value={config.algorithm} />
+            <div className="statbox">
+              <span className="statlabel">Algorithm</span>
+              <select
+                className="algo-select"
+                value={config.tiers[0]?.name ?? "token-bucket"}
+                disabled={switchingAlgo}
+                onChange={(e) => changeAlgo(e.target.value)}
+              >
+                {ALGORITHMS.map((a) => (
+                  <option key={a.value} value={a.value}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <Stat label="Backend" value={config.backend} />
             <Stat label="Key by" value={config.keyBy} />
             {config.tiers.map((t) => (
@@ -79,6 +119,7 @@ export function App() {
           {live.connected ? "● live stream connected" : "○ live stream offline"}
         </span>
       </section>
+      {algoError && <div className="algo-error">algorithm switch failed: {algoError}</div>}
 
       <section className="panel burst">
         <div className="burst-controls">

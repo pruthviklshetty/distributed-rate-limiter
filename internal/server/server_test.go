@@ -1,23 +1,32 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/pruthviklshetty/distributed-rate-limiter/internal/api"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/httpmw"
-	"github.com/pruthviklshetty/distributed-rate-limiter/internal/ratelimit"
+	"github.com/pruthviklshetty/distributed-rate-limiter/internal/limiter"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/stats"
 )
 
-func TestServer_Routing(t *testing.T) {
-	lim, err := ratelimit.NewTokenBucket(ratelimit.TokenBucketConfig{Capacity: 2, RefillPerSec: 0.001})
+func newSwitch(t *testing.T, limit int64) *limiter.Switch {
+	t.Helper()
+	s, err := limiter.NewSwitch(context.Background(), nil, limiter.AlgoTokenBucket, limiter.Params{
+		Limit: limit, Refill: 0.001, Window: time.Minute, IdleTTL: time.Hour,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestServer_Routing(t *testing.T) {
 	c := stats.New(stats.Config{})
 	defer c.Close()
 
@@ -26,11 +35,10 @@ func TestServer_Routing(t *testing.T) {
 	})
 
 	h := New(Options{
-		Limiter:   lim,
+		Control:   newSwitch(t, 2),
 		KeyFunc:   func(*http.Request) string { return "k" },
-		Algorithm: "token-bucket",
+		KeyBy:     "ip",
 		Collector: c,
-		APIConfig: api.ConfigInfo{Algorithm: "token-bucket", Backend: "in-memory"},
 		UI:        ui,
 	})
 
@@ -67,12 +75,36 @@ func TestServer_Routing(t *testing.T) {
 }
 
 func TestServer_NoUIPlaceholder(t *testing.T) {
-	lim, _ := ratelimit.NewTokenBucket(ratelimit.TokenBucketConfig{Capacity: 1, RefillPerSec: 0.001})
-	h := New(Options{Limiter: lim, KeyFunc: httpmw.KeyByIP})
+	h := New(Options{Control: newSwitch(t, 1), KeyFunc: httpmw.KeyByIP})
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "not embedded") {
 		t.Fatalf("placeholder = %d %q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServer_AlgorithmSwitchEndpoint(t *testing.T) {
+	c := stats.New(stats.Config{})
+	defer c.Close()
+
+	h := New(Options{
+		Control:   newSwitch(t, 5),
+		KeyFunc:   func(*http.Request) string { return "k" },
+		KeyBy:     "ip",
+		Collector: c,
+	})
+
+	post := httptest.NewRecorder()
+	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/config/algorithm",
+		strings.NewReader(`{"algorithm":"sliding-window"}`)))
+	if post.Code != 200 {
+		t.Fatalf("switch = %d: %s", post.Code, post.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if !strings.Contains(get.Body.String(), `"algorithm":"sliding-window"`) {
+		t.Fatalf("config after switch: %s", get.Body.String())
 	}
 }

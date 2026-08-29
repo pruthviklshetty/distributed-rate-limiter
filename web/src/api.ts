@@ -69,3 +69,18 @@ export async function sendBurst(key: string, count: number): Promise<{ allowed: 
   if (!r.ok) throw new Error(`/api/demo/burst ${r.status}`);
   return r.json();
 }
+
+// setAlgorithm switches the live limiter's algorithm and returns the updated
+// config. Valid values: "token-bucket", "sliding-window".
+export async function setAlgorithm(algorithm: string): Promise<ConfigInfo> {
+  const r = await fetch("/api/config/algorithm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ algorithm }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error || `/api/config/algorithm ${r.status}`);
+  }
+  return r.json();
+}

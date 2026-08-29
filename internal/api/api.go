@@ -12,6 +12,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -37,14 +38,24 @@ type ConfigInfo struct {
 	Tiers     []TierInfo `json:"tiers"`
 }
 
+// Control is the live limiter the API needs: it enforces requests (the demo
+// endpoint uses the SAME instance the middleware does, so a burst produces
+// real 429s), reports the active configuration, and can switch algorithm at
+// runtime. ConfigInfo leaves KeyBy empty; Handlers fills it in.
+type Control interface {
+	Allow(ctx context.Context, key string) (ratelimit.Result, error)
+	ConfigInfo() ConfigInfo
+	Algorithm() string
+	SetAlgorithm(algo string) error
+}
+
 // Handlers holds everything the API endpoints need.
 type Handlers struct {
 	Collector *stats.Collector
-	Config    ConfigInfo
-	// DemoLimiter is the SAME limiter the middleware enforces, so POST
-	// /api/demo/burst consumes real budget and makes real requests get 429s.
-	DemoLimiter ratelimit.RateLimiter
-	Algorithm   string
+	Control   Control
+	// KeyBy is the middleware's key granularity ("ip", "header:X-API-Key");
+	// it is static and merged into every ConfigInfo response.
+	KeyBy string
 }
 
 // Mount registers the routes on mux. These are intentionally NOT wrapped by
@@ -54,8 +65,16 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", h.handleStats)
 	mux.HandleFunc("GET /api/keys/{key}", h.handleKey)
 	mux.HandleFunc("GET /api/config", h.handleConfig)
+	mux.HandleFunc("POST /api/config/algorithm", h.handleSetAlgorithm)
 	mux.HandleFunc("GET /api/events", h.handleEvents)
 	mux.HandleFunc("POST /api/demo/burst", h.handleBurst)
+}
+
+// config returns the live ConfigInfo with KeyBy merged in.
+func (h *Handlers) config() ConfigInfo {
+	ci := h.Control.ConfigInfo()
+	ci.KeyBy = h.KeyBy
+	return ci
 }
 
 func (h *Handlers) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +94,27 @@ func (h *Handlers) handleKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, h.Config)
+	writeJSON(w, http.StatusOK, h.config())
+}
+
+type algorithmRequest struct {
+	Algorithm string `json:"algorithm"`
+}
+
+// handleSetAlgorithm swaps the active limiting algorithm at runtime and
+// returns the updated config. The choice is not persisted — a restart reverts
+// to the configured default.
+func (h *Handlers) handleSetAlgorithm(w http.ResponseWriter, r *http.Request) {
+	var req algorithmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if err := h.Control.SetAlgorithm(req.Algorithm); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.config())
 }
 
 type eventDTO struct {
@@ -157,9 +196,10 @@ func (h *Handlers) handleBurst(w http.ResponseWriter, r *http.Request) {
 
 	var out burstResult
 	out.Key, out.Requested = req.Key, req.Count
+	algo := h.Control.Algorithm()
 	for i := 0; i < req.Count; i++ {
 		start := time.Now()
-		res, err := h.DemoLimiter.Allow(r.Context(), req.Key)
+		res, err := h.Control.Allow(r.Context(), req.Key)
 		latency := time.Since(start)
 		allowed := err != nil || res.Allowed // fail-open, mirror the middleware
 		if allowed {
@@ -168,7 +208,7 @@ func (h *Handlers) handleBurst(w http.ResponseWriter, r *http.Request) {
 			out.Rejected++
 		}
 		h.Collector.Record(events.Event{
-			Key: req.Key, Algorithm: h.Algorithm, Allowed: allowed,
+			Key: req.Key, Algorithm: algo, Allowed: allowed,
 			Remaining: res.Remaining, Timestamp: time.Now(), Latency: latency,
 		})
 	}

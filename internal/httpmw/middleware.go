@@ -47,6 +47,9 @@ type Config struct {
 	Sink    events.Sink           // defaults to events.NopSink
 	// Algorithm labels events and is otherwise informational.
 	Algorithm string
+	// AlgorithmFn, if set, supplies the event label dynamically (the active
+	// algorithm can change at runtime). It wins over Algorithm.
+	AlgorithmFn func() string
 	// Logger is used only for the fail-open warning. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -57,6 +60,7 @@ type Middleware struct {
 	keyFunc   KeyFunc
 	sink      events.Sink
 	algorithm string
+	algoFn    func() string
 	log       *slog.Logger
 }
 
@@ -67,6 +71,7 @@ func New(cfg Config) *Middleware {
 		keyFunc:   cfg.KeyFunc,
 		sink:      cfg.Sink,
 		algorithm: cfg.Algorithm,
+		algoFn:    cfg.AlgorithmFn,
 		log:       cfg.Logger,
 	}
 	if m.keyFunc == nil {
@@ -79,6 +84,14 @@ func New(cfg Config) *Middleware {
 		m.log = slog.Default()
 	}
 	return m
+}
+
+// algoLabel returns the current event label.
+func (m *Middleware) algoLabel() string {
+	if m.algoFn != nil {
+		return m.algoFn()
+	}
+	return m.algorithm
 }
 
 // Handler wraps next with rate limiting.
@@ -95,6 +108,7 @@ func New(cfg Config) *Middleware {
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := m.keyFunc(r)
+		algo := m.algoLabel()
 
 		start := time.Now()
 		res, err := m.limiter.Allow(r.Context(), key)
@@ -102,9 +116,9 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		if err != nil {
 			m.log.WarnContext(r.Context(), "rate limiter error; failing open",
-				"key", key, "algorithm", m.algorithm, "err", err)
+				"key", key, "algorithm", algo, "err", err)
 			m.sink.Record(events.Event{
-				Key: key, Algorithm: m.algorithm, Allowed: true,
+				Key: key, Algorithm: algo, Allowed: true,
 				Remaining: -1, Timestamp: time.Now(), Latency: latency,
 			})
 			next.ServeHTTP(w, r)
@@ -116,7 +130,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		h.Set("X-RateLimit-Remaining", strconv.FormatInt(max(res.Remaining, 0), 10))
 
 		m.sink.Record(events.Event{
-			Key: key, Algorithm: m.algorithm, Allowed: res.Allowed,
+			Key: key, Algorithm: algo, Allowed: res.Allowed,
 			Remaining: res.Remaining, Timestamp: time.Now(), Latency: latency,
 		})
 

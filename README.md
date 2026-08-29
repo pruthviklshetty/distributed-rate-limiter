@@ -64,6 +64,7 @@ type Result struct {
 
 ```
 internal/ratelimit/   RateLimiter + Result, Clock, and every algorithm/backend
+internal/limiter/     Switch: the runtime-swappable RateLimiter the server uses
 internal/events/      EventSink hook the middleware calls after each decision
 internal/httpmw/       HTTP middleware: KeyFunc, 429 + Retry-After, headers, fail-open
 internal/server/      assembles the HTTP handler
@@ -419,6 +420,7 @@ every event accounted for (applied or dropped), and live subscribe/unsubscribe.
 | `GET /api/stats?seconds=&top=` | totals, `dropped`, zero-filled per-second series, top-N keys by decision count |
 | `GET /api/keys/{key}` | one key's tally (allowed, rejected, last remaining, last seen); 404 if unseen |
 | `GET /api/config` | active algorithm, key-by mode, backend, tier limits |
+| `POST /api/config/algorithm` `{"algorithm"}` | swaps the live algorithm (`token-bucket` \| `sliding-window`), returns the updated config; `400` on an unknown value |
 | `GET /api/events` | **SSE** stream of live decisions, with a ~25-event backlog on connect and a 15s keepalive comment |
 | `POST /api/demo/burst` `{"key","count"}` | fires `count` requests server-side at the **real** limiter (bounded to 1000), returns `{allowed, rejected}` |
 
@@ -448,15 +450,17 @@ The page is deliberately one screen with four things:
    ([useLiveSeries.ts](web/src/useLiveSeries.ts)). Events are rolled up into
    per-second buckets client-side and the chart re-renders at 1 Hz, so a burst
    of thousands of events stays cheap and the time axis keeps moving while idle.
-2. **Active config** — algorithm, backend, key-by mode, tier limits — from
-   `GET /api/config`.
+2. **Active config** — backend, key-by mode, tier limits — from
+   `GET /api/config`, with an **algorithm dropdown** that `POST`s to
+   `/api/config/algorithm` and hot-swaps token bucket / sliding window with no
+   restart (see [Runtime algorithm switch](#runtime-algorithm-switch)).
 3. **Top keys table** — key, remaining, allowed, rejected — polled from
    `GET /api/stats` every 2 s.
 4. **Send burst control** — key + count, `POST /api/demo/burst`. Because the
    demo hits the real limiter, the chart's reject area and the table's reject
    column jump within a second of clicking.
 
-No router (one page), no auth, no config editing. Recharts pulls in d3, so the
+No router (one page), no auth. Recharts pulls in d3, so the
 JS bundle is ~530 kB (154 kB gzipped) — acceptable for a single-purpose
 dashboard; code-splitting would be the fix if it mattered.
 
@@ -502,6 +506,27 @@ daemon available); the Dockerfile follows standard multi-stage patterns.
 
 Compose both with `MultiLimiter` to get "burst up to X, but no more than Y per
 minute".
+
+## Runtime algorithm switch
+
+**Files:** [internal/limiter/switch.go](internal/limiter/switch.go),
+[switch_test.go](internal/limiter/switch_test.go)
+
+`limiter.Switch` is itself a `RateLimiter`; it holds the active algorithm
+behind a `sync.RWMutex` and can replace it at runtime. `Allow` takes the read
+lock and forwards; `SetAlgorithm` builds the new limiter, swaps the pointer
+under the write lock, then stops the previous algorithm's janitor **outside**
+the lock (the stop call blocks until that goroutine exits, and holding the
+write lock across it would stall every in-flight request). The middleware and
+the demo endpoint hold a reference to the `Switch`, not to a concrete
+algorithm, so the swap is invisible to them.
+
+The dashboard's algorithm dropdown drives it via `POST /api/config/algorithm`.
+Per-key state does **not** carry across a swap — the new algorithm starts
+empty — and the choice is not persisted, so a restart returns to `-algo`. This
+keeps the switch a demo affordance rather than a config system. A
+`-race` test runs 16 goroutines calling `Allow` while another goroutine flips
+the algorithm every millisecond.
 
 ## Running the server
 

@@ -17,9 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pruthviklshetty/distributed-rate-limiter/internal/api"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/httpmw"
-	"github.com/pruthviklshetty/distributed-rate-limiter/internal/ratelimit"
+	"github.com/pruthviklshetty/distributed-rate-limiter/internal/limiter"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/server"
 	"github.com/pruthviklshetty/distributed-rate-limiter/internal/stats"
 	"github.com/redis/go-redis/v9"
@@ -128,12 +127,28 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	limiter, algoLabel, cleanup, err := buildLimiter(ctx, f)
+	var rdb *redis.Client
+	if f.redis != "" {
+		var err error
+		if rdb, err = newRedisClient(f); err != nil {
+			log.Error("redis client", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	lim, err := limiter.NewSwitch(ctx, rdb, f.algo, limiter.Params{
+		Limit: f.limit, Refill: f.refill, Window: f.window, IdleTTL: f.idleTTL,
+	})
 	if err != nil {
 		log.Error("build limiter", "err", err)
 		os.Exit(1)
 	}
-	defer cleanup()
+	defer func() {
+		lim.Close()
+		if rdb != nil {
+			_ = rdb.Close()
+		}
+	}()
 
 	keyFunc, err := buildKeyFunc(f.keyBy)
 	if err != nil {
@@ -151,11 +166,10 @@ func main() {
 	}
 
 	handler := server.New(server.Options{
-		Limiter:   limiter,
+		Control:   lim,
 		KeyFunc:   keyFunc,
-		Algorithm: algoLabel,
+		KeyBy:     f.keyBy,
 		Collector: collector,
-		APIConfig: apiConfig(f, algoLabel),
 		UI:        ui,
 	})
 
@@ -166,7 +180,7 @@ func main() {
 	}
 
 	go func() {
-		log.Info("listening", "addr", f.addr, "algo", algoLabel, "redis", f.redis != "")
+		log.Info("listening", "addr", f.addr, "algo", lim.Algorithm(), "redis", f.redis != "")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("serve", "err", err)
 			os.Exit(1)
@@ -179,76 +193,6 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		log.Error("shutdown", "err", err)
-	}
-}
-
-// buildLimiter constructs the limiter from flags and returns it, a label for
-// events, and a cleanup func that stops any background janitor.
-func buildLimiter(ctx context.Context, f flags) (ratelimit.RateLimiter, string, func(), error) {
-	noop := func() {}
-
-	switch f.algo {
-	case "token-bucket":
-		local, err := ratelimit.NewTokenBucket(ratelimit.TokenBucketConfig{
-			Capacity: f.limit, RefillPerSec: f.refill,
-		})
-		if err != nil {
-			return nil, "", noop, err
-		}
-		stopJanitor := local.StartJanitor(ctx, f.idleTTL, f.idleTTL/4)
-
-		if f.redis == "" {
-			return local, "token-bucket", stopJanitor, nil
-		}
-		rdb, err := newRedisClient(f)
-		if err != nil {
-			return nil, "", noop, err
-		}
-		remote, err := ratelimit.NewRedisTokenBucket(ratelimit.RedisTokenBucketConfig{
-			Client: rdb, Capacity: f.limit, RefillPerSec: f.refill,
-			KeyPrefix: "rl:tb:", IdleTTL: f.idleTTL,
-		})
-		if err != nil {
-			return nil, "", noop, err
-		}
-		fb := ratelimit.NewFallbackLimiter(remote, local)
-		fb.OnFallback = func(err error) { slog.Warn("redis fallback to local limiter", "err", err) }
-		cleanup := func() { stopJanitor(); _ = rdb.Close() }
-		return fb, "token-bucket+redis", cleanup, nil
-
-	case "sliding-window":
-		sw, err := ratelimit.NewSlidingWindow(ratelimit.SlidingWindowConfig{
-			Limit: f.limit, WindowLen: f.window,
-		})
-		if err != nil {
-			return nil, "", noop, err
-		}
-		stopJanitor := sw.StartJanitor(ctx, f.idleTTL, f.idleTTL/4)
-		return sw, "sliding-window", stopJanitor, nil
-
-	default:
-		return nil, "", noop, errors.New("unknown -algo: " + f.algo)
-	}
-}
-
-// apiConfig builds the payload served by GET /api/config from the flags.
-func apiConfig(f flags, algoLabel string) api.ConfigInfo {
-	backend := "in-memory"
-	if f.redis != "" {
-		backend = "redis+fallback"
-	}
-	tier := api.TierInfo{Name: f.algo, Limit: f.limit}
-	switch f.algo {
-	case "token-bucket":
-		tier.RefillPerSec = f.refill
-	case "sliding-window":
-		tier.WindowSeconds = f.window.Seconds()
-	}
-	return api.ConfigInfo{
-		Algorithm: algoLabel,
-		KeyBy:     f.keyBy,
-		Backend:   backend,
-		Tiers:     []api.TierInfo{tier},
 	}
 }
 
