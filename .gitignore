@@ -9,6 +9,11 @@
 /vendor/
 coverage.*
 
+# Secrets / local config — never commit
+.env
+.env.*
+!.env.example
+
 # Frontend
 /web/node_modules/
 # NOTE: /web/dist is intentionally committed — internal/webui embeds it with

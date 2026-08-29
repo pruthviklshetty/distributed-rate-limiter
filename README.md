@@ -479,7 +479,8 @@ Dev: `cd web && npm run dev` proxies `/api` to `:8080`.
   static `CGO_ENABLED=0` binary with those assets, `distroless/static` runs it.
 - **docker-compose.yml**: `app` + `redis`, app configured (`RL_REDIS=redis:6379`)
   to use the Redis token bucket with in-memory fallback, waiting on a Redis
-  healthcheck.
+  healthcheck. `RL_REDIS_PASSWORD` is optional — unset for local/Compose Redis
+  (no auth), set it for managed providers (e.g. Railway) that require a password.
 
 `go run .` serving the embedded UI + API, a server-side burst producing real
 429s, and `/api/*` 404 behaviour are covered by
@@ -508,10 +509,15 @@ minute".
 go run . -algo token-bucket -limit 200 -refill 100 -key-by header:X-API-Key
 go run . -algo sliding-window -limit 100 -window 1m
 go run . -redis localhost:6379           # Redis primary + in-memory fallback
+go run . -redis my-host:6379 -redis-password "$RL_REDIS_PASSWORD"   # managed Redis
 ```
 
 Flags: `-addr`, `-algo`, `-limit`, `-refill`, `-window`, `-key-by`
-(`ip` | `header:<Name>`), `-redis`, `-idle-ttl`.
+(`ip` | `header:<Name>`), `-redis`, `-redis-password`, `-idle-ttl`.
+
+`-addr`, `-algo`, `-redis`, and `-redis-password` also read env vars
+(`RL_ADDR`, `RL_ALGO`, `RL_REDIS`, `RL_REDIS_PASSWORD`). `RL_REDIS_PASSWORD`
+is optional — empty means no auth, as with local/Compose Redis.
 
 ## Development
 

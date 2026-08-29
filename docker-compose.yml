@@ -22,6 +22,10 @@ services:
       RL_ADDR: ":8080"
       RL_ALGO: "token-bucket"
       RL_REDIS: "redis:6379"
+      # RL_REDIS_PASSWORD is optional; leave unset for local/Compose Redis
+      # (no auth). Set it for managed Redis providers (e.g. Railway) that
+      # require a password.
+      # RL_REDIS_PASSWORD: ""
     command: ["-limit", "200", "-refill", "100", "-key-by", "header:X-API-Key"]
     depends_on:
       redis:

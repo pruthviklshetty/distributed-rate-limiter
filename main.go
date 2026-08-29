@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -25,14 +26,15 @@ import (
 )
 
 type flags struct {
-	addr    string
-	algo    string
-	limit   int64
-	refill  float64
-	window  time.Duration
-	keyBy   string
-	redis   string
-	idleTTL time.Duration
+	addr          string
+	algo          string
+	limit         int64
+	refill        float64
+	window        time.Duration
+	keyBy         string
+	redis         string
+	redisPassword string
+	idleTTL       time.Duration
 }
 
 func parseFlags() flags {
@@ -43,7 +45,10 @@ func parseFlags() flags {
 	flag.Float64Var(&f.refill, "refill", 20, "token-bucket refill rate (tokens/sec)")
 	flag.DurationVar(&f.window, "window", time.Minute, "sliding-window length")
 	flag.StringVar(&f.keyBy, "key-by", "ip", "ip | header:<Name>")
-	flag.StringVar(&f.redis, "redis", os.Getenv("RL_REDIS"), "Redis address for a shared backend (empty = in-memory only)")
+	flag.StringVar(&f.redis, "redis", firstEnv("RL_REDIS", "REDIS_URL"),
+		"Redis for a shared backend: a host:port address or a redis:// / rediss:// URL (empty = in-memory only)")
+	flag.StringVar(&f.redisPassword, "redis-password", firstEnv("RL_REDIS_PASSWORD", "REDIS_PASSWORD", "REDISPASSWORD"),
+		"Redis password for the host:port form (empty = no auth; ignored when -redis is a URL)")
 	flag.DurationVar(&f.idleTTL, "idle-ttl", 10*time.Minute, "evict a key's state after this much inactivity")
 	flag.Parse()
 	return f
@@ -54,6 +59,65 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// firstEnv returns the first non-empty environment variable among keys, or "".
+// Managed Redis providers vary in what they inject (Railway sets REDIS_URL and
+// REDISPASSWORD, others use REDIS_PASSWORD), so accept the common names.
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// discardRedisLog silences go-redis's internal connection-pool logging. When
+// Redis is unreachable it prints a line per retry straight to stderr; the
+// FallbackLimiter's OnFallback hook already emits one clean WARN per fallback,
+// so the internal chatter is pure noise.
+type discardRedisLog struct{}
+
+func (discardRedisLog) Printf(context.Context, string, ...any) {}
+
+// newRedisClient builds a go-redis client from the -redis value. A value
+// beginning with redis:// or rediss:// is parsed as a full connection URL
+// (managed providers hand one out, with the password — and TLS, for rediss —
+// baked in). Anything else is treated as a host:port address, with the
+// password coming from -redis-password.
+func newRedisClient(f flags) (*redis.Client, error) {
+	redis.SetLogger(discardRedisLog{})
+
+	var opt *redis.Options
+	if strings.HasPrefix(f.redis, "redis://") || strings.HasPrefix(f.redis, "rediss://") {
+		parsed, err := redis.ParseURL(f.redis)
+		if err != nil {
+			return nil, fmt.Errorf("parse -redis URL: %w", err)
+		}
+		opt = parsed
+	} else {
+		opt = &redis.Options{Addr: f.redis, Password: f.redisPassword}
+	}
+
+	// Fail fast to the in-memory fallback rather than stalling every request on
+	// dial/retry backoff when Redis is unreachable: no retries (the
+	// FallbackLimiter is the safety net, and the next request retries Redis
+	// fresh) and short timeouts. URL query params (?dial_timeout=…) still win
+	// where the caller set them.
+	if opt.MaxRetries == 0 {
+		opt.MaxRetries = -1
+	}
+	if opt.DialTimeout == 0 {
+		opt.DialTimeout = 500 * time.Millisecond
+	}
+	if opt.ReadTimeout == 0 {
+		opt.ReadTimeout = 500 * time.Millisecond
+	}
+	if opt.WriteTimeout == 0 {
+		opt.WriteTimeout = 500 * time.Millisecond
+	}
+	return redis.NewClient(opt), nil
 }
 
 func main() {
@@ -136,7 +200,10 @@ func buildLimiter(ctx context.Context, f flags) (ratelimit.RateLimiter, string, 
 		if f.redis == "" {
 			return local, "token-bucket", stopJanitor, nil
 		}
-		rdb := redis.NewClient(&redis.Options{Addr: f.redis})
+		rdb, err := newRedisClient(f)
+		if err != nil {
+			return nil, "", noop, err
+		}
 		remote, err := ratelimit.NewRedisTokenBucket(ratelimit.RedisTokenBucketConfig{
 			Client: rdb, Capacity: f.limit, RefillPerSec: f.refill,
 			KeyPrefix: "rl:tb:", IdleTTL: f.idleTTL,
