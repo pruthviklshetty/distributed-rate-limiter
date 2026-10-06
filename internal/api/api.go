@@ -1,14 +1,13 @@
-// Package api serves the read-only dashboard endpoints (stats, per-key
-// consumption, active config, and a live Server-Sent Events stream) plus a
-// server-side burst trigger for the demo.
+// Package api serves the observability endpoints (stats, per-key consumption,
+// active config, and a live Server-Sent Events stream of decisions), a
+// runtime algorithm switch, and a server-side burst trigger for demos.
 //
-// Why SSE and not WebSocket: the dashboard only ever consumes a one-way
-// server->client stream of decisions. SSE is a plain HTTP response with a
+// Why SSE and not WebSocket: consumers of the decision stream only ever read
+// a one-way server->client feed. SSE is a plain HTTP response with a
 // text/event-stream body — it needs no handshake, no framing library, no
-// separate protocol, and it reconnects on its own in the browser. A WebSocket
-// would add a bidirectional transport and its dependencies to carry traffic
-// that is entirely unidirectional. If the dashboard ever needed to push data
-// back (it does not), WebSocket would start to earn its complexity.
+// separate protocol, and browsers' EventSource reconnects on its own (curl -N
+// works too). A WebSocket would add a bidirectional transport and its
+// dependencies to carry traffic that is entirely unidirectional.
 package api
 
 import (
@@ -59,8 +58,8 @@ type Handlers struct {
 }
 
 // Mount registers the routes on mux. These are intentionally NOT wrapped by
-// the rate-limiting middleware: a throttled client must still be able to load
-// the dashboard that shows it being throttled.
+// the rate-limiting middleware: a throttled client must still be able to read
+// the stats that show it being throttled.
 func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", h.handleStats)
 	mux.HandleFunc("GET /api/keys/{key}", h.handleKey)
@@ -142,7 +141,7 @@ func (h *Handlers) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch, cancel := h.Collector.Subscribe(256)
 	defer cancel()
 
-	// Send a short backlog so a freshly opened dashboard is not blank.
+	// Send a short backlog so a freshly connected client is not blank.
 	recent := h.Collector.Recent(25)
 	for i := len(recent) - 1; i >= 0; i-- { // Recent is newest-first; emit oldest-first
 		writeSSE(w, toDTO(recent[i]))

@@ -1,8 +1,0 @@
-.git
-web/node_modules
-web/dist
-*.exe
-*.test
-distributed-rate-limiter
-README.md
-.gitignore

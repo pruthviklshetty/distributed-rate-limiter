@@ -1,5 +1,5 @@
 // Package stats provides an in-memory EventSink that aggregates rate-limit
-// decisions for the dashboard API: a ring buffer of recent decisions, rolling
+// decisions for the stats API: a ring buffer of recent decisions, rolling
 // per-second allow/reject counters, and per-key totals — all with bounded
 // memory.
 package stats

@@ -1,7 +1,6 @@
-// Command distributed-rate-limiter runs the HTTP API guarded by a configurable
-// rate limiter. Stages 7-9 add the stats API and the embedded dashboard; for
-// now it serves GET /api/ping behind the limiter so the Stage 6 load test has
-// a target.
+// Command distributed-rate-limiter runs an HTTP API guarded by a configurable
+// rate limiter. GET /api/ping is the rate-limited endpoint; the stats/config
+// API under /api is mounted outside the limiter.
 package main
 
 import (
@@ -159,18 +158,11 @@ func main() {
 	collector := stats.New(stats.Config{})
 	defer collector.Close()
 
-	ui, err := dashboardHandler()
-	if err != nil {
-		log.Error("load embedded dashboard", "err", err)
-		os.Exit(1)
-	}
-
 	handler := server.New(server.Options{
 		Control:   lim,
 		KeyFunc:   keyFunc,
 		KeyBy:     f.keyBy,
 		Collector: collector,
-		UI:        ui,
 	})
 
 	srv := &http.Server{

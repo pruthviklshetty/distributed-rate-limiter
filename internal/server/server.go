@@ -1,7 +1,7 @@
 // Package server assembles the HTTP handler: the rate-limited endpoints plus
-// the read-only stats/config/events API. The API routes are mounted OUTSIDE
-// the rate-limiting middleware so a client that is being throttled can still
-// load the dashboard that shows it being throttled.
+// the stats/config/events API. The API routes are mounted OUTSIDE the
+// rate-limiting middleware so a client that is being throttled can still
+// query the stats that show it being throttled.
 package server
 
 import (
@@ -26,9 +26,6 @@ type Options struct {
 	// Collector receives an event per decision and backs the API. If nil, a
 	// no-op sink is used and the API is not mounted.
 	Collector *stats.Collector
-	// UI, if set, serves the dashboard at "/". Passed in (rather than imported
-	// here) so this package has no dependency on the embedded assets.
-	UI http.Handler
 }
 
 // New returns the top-level http.Handler.
@@ -63,16 +60,9 @@ func New(opts Options) http.Handler {
 		h.Mount(root)
 	}
 
-	// Any unrouted /api/* path is a 404, not the SPA shell.
-	root.HandleFunc("/api/", http.NotFound)
-
-	if opts.UI != nil {
-		root.Handle("/", opts.UI)
-	} else {
-		root.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]string{"service": "distributed-rate-limiter", "ui": "not embedded"})
-		})
-	}
+	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"service": "distributed-rate-limiter"})
+	})
 
 	return root
 }

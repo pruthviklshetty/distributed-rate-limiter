@@ -2,7 +2,7 @@
 // every rate-limit decision. It is deliberately separate from the
 // ratelimit.RateLimiter interface: limiters decide, the middleware reports.
 // Keeping the two apart means an algorithm never has a dependency on metrics
-// or a dashboard, and the reporting side can be swapped (no-op in tests, a
+// or an API, and the reporting side can be swapped (no-op in tests, a
 // stats collector in the server) without touching limiter code.
 package events
 

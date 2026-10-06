@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,16 +29,11 @@ func TestServer_Routing(t *testing.T) {
 	c := stats.New(stats.Config{})
 	defer c.Close()
 
-	ui := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "DASHBOARD")
-	})
-
 	h := New(Options{
 		Control:   newSwitch(t, 2),
 		KeyFunc:   func(*http.Request) string { return "k" },
 		KeyBy:     "ip",
 		Collector: c,
-		UI:        ui,
 	})
 
 	get := func(path string) *httptest.ResponseRecorder {
@@ -48,19 +42,19 @@ func TestServer_Routing(t *testing.T) {
 		return rr
 	}
 
-	// UI at "/".
-	if rr := get("/"); rr.Code != 200 || !strings.Contains(rr.Body.String(), "DASHBOARD") {
+	// "/" is a small service banner.
+	if rr := get("/"); rr.Code != 200 || !strings.Contains(rr.Body.String(), "distributed-rate-limiter") {
 		t.Fatalf("/ = %d %q", rr.Code, rr.Body.String())
 	}
-	// Unknown SPA path still hits the UI handler.
-	if rr := get("/dashboard/whatever"); !strings.Contains(rr.Body.String(), "DASHBOARD") {
-		t.Fatalf("SPA fallback failed: %q", rr.Body.String())
+	// Unknown paths 404.
+	if rr := get("/no/such/path"); rr.Code != http.StatusNotFound {
+		t.Fatalf("/no/such/path = %d, want 404", rr.Code)
 	}
 	// API config is served and not rate limited.
 	if rr := get("/api/config"); rr.Code != 200 {
 		t.Fatalf("/api/config = %d", rr.Code)
 	}
-	// Unrouted /api/* is a 404, not the SPA.
+	// Unrouted /api/* is a 404.
 	if rr := get("/api/nope"); rr.Code != http.StatusNotFound {
 		t.Fatalf("/api/nope = %d, want 404", rr.Code)
 	}
@@ -74,13 +68,23 @@ func TestServer_Routing(t *testing.T) {
 	}
 }
 
-func TestServer_NoUIPlaceholder(t *testing.T) {
+// Without a collector the API is not mounted, but /api/ping is still limited.
+func TestServer_NoCollector(t *testing.T) {
 	h := New(Options{Control: newSwitch(t, 1), KeyFunc: httpmw.KeyByIP})
 
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "not embedded") {
-		t.Fatalf("placeholder = %d %q", rr.Code, rr.Body.String())
+	get := func(path string) int {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		return rr.Code
+	}
+	if code := get("/api/config"); code != http.StatusNotFound {
+		t.Fatalf("/api/config = %d, want 404 with no collector", code)
+	}
+	if code := get("/api/ping"); code != 200 {
+		t.Fatalf("ping #1 = %d, want 200", code)
+	}
+	if code := get("/api/ping"); code != http.StatusTooManyRequests {
+		t.Fatalf("ping #2 = %d, want 429", code)
 	}
 }
 

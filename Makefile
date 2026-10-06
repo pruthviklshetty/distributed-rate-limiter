@@ -1,29 +1,21 @@
-# Build/test tasks. `make build` compiles the frontend, then the single Go
-# binary with the frontend embedded. On Windows without `make`, use build.ps1.
+# Build/test tasks.
 
 BIN := distributed-rate-limiter
 GO  := go
 
-.PHONY: all build web binary run test vet bench race clean docker-up docker-down
+.PHONY: all build run test vet bench race clean
 
 all: build
 
-## build: frontend -> web/dist, then the embedding Go binary
-build: web binary
-
-## web: install deps and build the dashboard into web/dist
-web:
-	cd web && npm ci && npm run build
-
-## binary: compile the Go binary (expects web/dist to exist)
-binary:
+## build: compile the server binary
+build:
 	$(GO) build -o $(BIN) .
 
-## run: build everything and start the server
+## run: build and start the server
 run: build
 	./$(BIN)
 
-## test: race tests + vet (the per-stage "done" gate)
+## test: race tests + vet
 test: race vet
 
 race:
@@ -36,12 +28,5 @@ vet:
 bench:
 	$(GO) test -run=^$$ -bench=. -benchmem ./internal/ratelimit
 
-## docker-up: app + Redis via Docker Compose
-docker-up:
-	docker compose up --build
-
-docker-down:
-	docker compose down -v
-
 clean:
-	rm -rf $(BIN) $(BIN).exe web/dist web/node_modules
+	rm -f $(BIN) $(BIN).exe

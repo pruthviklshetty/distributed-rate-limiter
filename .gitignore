@@ -14,11 +14,8 @@ coverage.*
 .env.*
 !.env.example
 
-# Frontend
-/web/node_modules/
-# NOTE: /web/dist is intentionally committed — internal/webui embeds it with
-# go:embed so `go run .` always has a dashboard to serve. `make build`
-# regenerates it from source.
+# Personal interview prep — not part of the project
+INTERVIEW_NOTES.md
 
 # Editor / OS
 .DS_Store

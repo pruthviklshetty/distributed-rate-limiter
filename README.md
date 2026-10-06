@@ -1,8 +1,8 @@
 # Distributed API Rate Limiter
 
 A rate limiter built in Go as a portfolio project. The focus is algorithm
-design and concurrency correctness; a dashboard frontend (later stages) exists
-to make that work visible.
+design and concurrency correctness. It is a backend service only — there is no
+frontend; the stats API and SSE stream are consumed with `curl`.
 
 The project is built in numbered stages. This README documents **only what is
 actually built and committed**. Stages not yet done are listed as such.
@@ -18,23 +18,25 @@ actually built and committed**. Stages not yet done are listed as such.
 | 5 | Sliding window counter algorithm | **Done** |
 | 6 | Benchmarks and HTTP load tests | **Done** |
 | 7 | Stats collector (EventSink) + JSON/SSE API | **Done** |
-| 8 | React + TypeScript dashboard | **Done** |
-| 9 | Single binary via `go:embed` + Docker Compose | **Done** |
+| 8 | React + TypeScript dashboard | **Removed** — dropped from scope |
+| 9 | Single binary via `go:embed` + Docker Compose | **Removed** — no frontend to embed; Docker not needed |
 
 ## Quick start
 
 ```
-# one binary, dashboard embedded — needs Go 1.27+ and a built web/dist (committed)
-go run .                       # http://localhost:8080
-
-# rebuild the dashboard from source first (needs Node), then the binary
-make build && ./distributed-rate-limiter        # or:  ./build.ps1  on Windows
-
-# app + Redis (shared global counters)
-docker compose up --build
+go run .                                   # http://localhost:8080, in-memory limiter
+go run . -redis localhost:6379             # shared counters via Redis
 ```
 
-Open `http://localhost:8080`, click **Send burst**, watch 429s appear live.
+Try it:
+
+```
+curl -i http://localhost:8080/api/ping                          # X-RateLimit-* headers
+curl -X POST localhost:8080/api/demo/burst -d '{"key":"demo","count":150}'
+curl localhost:8080/api/stats                                   # totals + top keys
+curl -N localhost:8080/api/events                               # live SSE stream
+curl -X POST localhost:8080/api/config/algorithm -d '{"algorithm":"sliding-window"}'
+```
 
 ## Architecture
 
@@ -68,12 +70,11 @@ internal/limiter/     Switch: the runtime-swappable RateLimiter the server uses
 internal/events/      EventSink hook the middleware calls after each decision
 internal/httpmw/       HTTP middleware: KeyFunc, 429 + Retry-After, headers, fail-open
 internal/server/      assembles the HTTP handler
+internal/stats/       in-memory stats collector (an EventSink)
+internal/api/         JSON + SSE API, demo burst, runtime algorithm switch
 cmd/loadtest/         standalone HTTP load generator (Stage 6)
 main.go               runs the server (go run .)
 ```
-
-The stats collector and JSON/SSE API packages are added in Stage 7; the
-dashboard in `web/` in Stage 8.
 
 ## Stage 1 — In-memory Token Bucket
 
@@ -432,66 +433,19 @@ and in `/api/stats`.
 
 ### Why SSE, not WebSocket
 
-The dashboard only consumes a one-way server→client stream. SSE is a plain
-`text/event-stream` HTTP response — no handshake, no framing library, no second
-protocol — and the browser's `EventSource` reconnects on its own. A WebSocket
-would add a bidirectional transport and its machinery to carry strictly
-unidirectional traffic. The moment the dashboard needed to send data back
-(it does not), WebSocket would start to pay for itself.
+Consumers of the decision stream only read a one-way server→client feed. SSE
+is a plain `text/event-stream` HTTP response — no handshake, no framing
+library, no second protocol — readable with `curl -N`, and a browser's
+`EventSource` reconnects on its own. A WebSocket would add a bidirectional
+transport and its machinery to carry strictly unidirectional traffic.
 
-## Stage 8 — Dashboard frontend
+## Stages 8 and 9 — removed
 
-**Files:** [web/](web/) — React 18 + TypeScript + Vite, Recharts for the chart.
-
-`npm run build` (`tsc` typecheck + `vite build`) passes and emits `web/dist/`.
-The page is deliberately one screen with four things:
-
-1. **Live allowed-vs-rejected area chart**, fed by the SSE stream
-   ([useLiveSeries.ts](web/src/useLiveSeries.ts)). Events are rolled up into
-   per-second buckets client-side and the chart re-renders at 1 Hz, so a burst
-   of thousands of events stays cheap and the time axis keeps moving while idle.
-2. **Active config** — backend, key-by mode, tier limits — from
-   `GET /api/config`, with an **algorithm dropdown** that `POST`s to
-   `/api/config/algorithm` and hot-swaps token bucket / sliding window with no
-   restart (see [Runtime algorithm switch](#runtime-algorithm-switch)).
-3. **Top keys table** — key, remaining, allowed, rejected — polled from
-   `GET /api/stats` every 2 s.
-4. **Send burst control** — key + count, `POST /api/demo/burst`. Because the
-   demo hits the real limiter, the chart's reject area and the table's reject
-   column jump within a second of clicking.
-
-No router (one page), no auth. Recharts pulls in d3, so the
-JS bundle is ~530 kB (154 kB gzipped) — acceptable for a single-purpose
-dashboard; code-splitting would be the fix if it mattered.
-
-Dev: `cd web && npm run dev` proxies `/api` to `:8080`.
-
-## Stage 9 — Single binary
-
-**Files:** [embed.go](embed.go), [Makefile](Makefile), [build.ps1](build.ps1),
-[Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml)
-
-- `embed.go` (`//go:embed all:web/dist`) bakes the built dashboard into the
-  binary and serves it at `/`, with unknown non-`/api` paths falling back to
-  `index.html`. `web/dist` is **committed** so `go run .` always works from a
-  fresh clone; `make build` regenerates it. The `/api/*` namespace 404s
-  instead of returning the SPA shell for unrouted paths.
-- **`make build`** / **`build.ps1`**: build the frontend, then `go build` the
-  binary. `make test` runs `go test -race ./...` + `go vet` (the per-stage
-  gate). `make bench` runs the algorithm benchmarks.
-- **Dockerfile**: 3 stages — `node` builds `web/dist`, `golang` builds a
-  static `CGO_ENABLED=0` binary with those assets, `distroless/static` runs it.
-- **docker-compose.yml**: `app` + `redis`, app configured (`RL_REDIS=redis:6379`)
-  to use the Redis token bucket with in-memory fallback, waiting on a Redis
-  healthcheck. `RL_REDIS_PASSWORD` is optional — unset for local/Compose Redis
-  (no auth), set it for managed providers (e.g. Railway) that require a password.
-
-`go run .` serving the embedded UI + API, a server-side burst producing real
-429s, and `/api/*` 404 behaviour are covered by
-[embed_test.go](embed_test.go) and
-[internal/server/server_test.go](internal/server/server_test.go). The Docker
-image build was not run in the environment that produced this README (no Docker
-daemon available); the Dockerfile follows standard multi-stage patterns.
+A React dashboard (Stage 8) and a single-binary `go:embed` build with a
+Dockerfile and Docker Compose (Stage 9) were built and later removed: the
+project is scoped to the backend. Everything the dashboard showed is available
+from the API above. No Docker setup is shipped; the server builds with
+`go build` and needs only an optional Redis.
 
 ## Algorithm tradeoffs
 
@@ -521,7 +475,7 @@ write lock across it would stall every in-flight request). The middleware and
 the demo endpoint hold a reference to the `Switch`, not to a concrete
 algorithm, so the swap is invisible to them.
 
-The dashboard's algorithm dropdown drives it via `POST /api/config/algorithm`.
+`POST /api/config/algorithm` `{"algorithm":"sliding-window"}` drives it.
 Per-key state does **not** carry across a swap — the new algorithm starts
 empty — and the choice is not persisted, so a restart returns to `-algo`. This
 keeps the switch a demo affordance rather than a config system. A
@@ -542,7 +496,7 @@ Flags: `-addr`, `-algo`, `-limit`, `-refill`, `-window`, `-key-by`
 
 `-addr`, `-algo`, `-redis`, and `-redis-password` also read env vars
 (`RL_ADDR`, `RL_ALGO`, `RL_REDIS`, `RL_REDIS_PASSWORD`). `RL_REDIS_PASSWORD`
-is optional — empty means no auth, as with local/Compose Redis.
+is optional — empty means no auth, as with a local Redis.
 
 ## Development
 
@@ -550,9 +504,8 @@ is optional — empty means no auth, as with local/Compose Redis.
 go test -race ./...                                  # or: make race
 go vet ./...                                         # or: make vet
 go test -run=^$ -bench=. -benchmem ./internal/ratelimit   # or: make bench
-cd web && npm run build                              # dashboard; or: make web
 ```
 
-Go 1.27+, Node 18+ (frontend only). Go dependencies:
+Go 1.27+. Go dependencies:
 `github.com/redis/go-redis/v9`; `github.com/alicebob/miniredis/v2` (tests only).
 Every stage was gated on `go test -race ./...` and `go vet ./...` passing.

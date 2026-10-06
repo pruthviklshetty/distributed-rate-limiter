@@ -1,5 +1,5 @@
 // Package limiter wires the ratelimit algorithms and backends into a single
-// hot-swappable RateLimiter. The dashboard can change the active algorithm at
+// hot-swappable RateLimiter. An API call can change the active algorithm at
 // runtime (POST /api/config/algorithm) without a restart: Switch builds the
 // new limiter, swaps it in behind an RWMutex, and stops the old janitor.
 //

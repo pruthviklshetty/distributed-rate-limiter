@@ -104,7 +104,7 @@ func (m *Middleware) algoLabel() string {
 // and no fallback configured) the request is allowed through rather than
 // rejected. A rate limiter is a availability *protection*; turning a limiter
 // outage into a site outage would defeat its purpose. The event is still
-// recorded, flagged as allowed, so the dashboard shows the degradation.
+// recorded, flagged as allowed, so the stats API shows the degradation.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := m.keyFunc(r)
