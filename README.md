@@ -18,8 +18,6 @@ actually built and committed**. Stages not yet done are listed as such.
 | 5 | Sliding window counter algorithm | **Done** |
 | 6 | Benchmarks and HTTP load tests | **Done** |
 | 7 | Stats collector (EventSink) + JSON/SSE API | **Done** |
-| 8 | React + TypeScript dashboard | **Removed** — dropped from scope |
-| 9 | Single binary via `go:embed` + Docker Compose | **Removed** — no frontend to embed; Docker not needed |
 
 ## Quick start
 
